@@ -1,105 +1,99 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
-const express = require('express');
-const axios = require('axios');
-const { Boom } = require('@hapi/boom');
-
+const { default: makeWASocket, useSingleFileAuthState, DisconnectReason } = require("@whiskeysockets/baileys");
+const P = require("pino");
+const express = require("express");
+const axios = require("axios");
 const app = express();
-const PORT = process.env.PORT || 3000;
-
+const port = process.env.PORT || 10000;
 app.use(express.json());
 
-const N8N_WEBHOOK_URL = "https://n8n-liemena.onrender.com/webhook/whatsapp-in"; // Ganti sesuai endpoint kamu
-let sock;
+const { state, saveState } = useSingleFileAuthState("./session/auth_info.json");
 
-const startSock = async () => {
-  const { state, saveCreds } = await useMultiFileAuthState('session');
-
-  sock = makeWASocket({
-    auth: state
+async function startSock() {
+  const sock = makeWASocket({
+    auth: state,
+    printQRInTerminal: true,
+    logger: P({ level: "silent" }),
+    generateHighQualityLinkPreview: true
   });
 
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    if (qr) {
-      console.log("\n Scan QR ini untuk login:\n" + qr);
-    }
-
-    if (connection === 'open') {
-      console.log(" Bot terkoneksi ke WhatsApp!");
-    }
-
-    if (connection === 'close') {
-      const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-      switch (reason) {
-        case DisconnectReason.loggedOut:
-          console.log(" Bot logout. Hapus sesi dan scan ulang QR.");
-          const fs = require('fs');
-          fs.rmSync('./session', { recursive: true, force: true });
-          startSock();
-          break;
-        case DisconnectReason.connectionReplaced:
-          console.log(" Instansi lain login ke akun ini. Bot dihentikan.");
-          break;
-        case DisconnectReason.connectionClosed:
-        case DisconnectReason.connectionLost:
-        case DisconnectReason.timedOut:
-        case DisconnectReason.restartRequired:
-          console.log(" Koneksi terputus. Mencoba reconnect...");
-          startSock();
-          break;
-        default:
-          console.log(" Koneksi terputus: ", lastDisconnect?.error);
-          startSock();
-          break;
-      }
+  sock.ev.on("connection.update", (update) => {
+    const { connection, lastDisconnect } = update;
+    if (connection === "close") {
+      const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+      console.log("Koneksi terputus. Reconnecting?", shouldReconnect);
+      if (shouldReconnect) startSock();
+    } else if (connection === "open") {
+      console.log("✅ Bot terhubung ke WhatsApp");
     }
   });
-
-  sock.ev.on('creds.update', saveCreds);
 
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    if (type !== "notify" || !messages[0]?.message) return;
+
     const msg = messages[0];
-    if (!msg.message || msg.key.fromMe) return; // <- INI WAJIB: cegah balas pesan sendiri
-  
-    const sender = msg.key.remoteJid;
-    const content = msg.message?.conversation || msg.message?.extendedTextMessage?.text || "";
-  
+    const from = msg.key.remoteJid;
+    const isGroup = msg.key.participant !== undefined;
+    const sender = isGroup ? msg.key.participant : from;
+    const content = msg.message?.conversation || msg.message?.extendedTextMessage?.text;
+
+    if (!content) return;
+
+    // Log untuk debug
     console.log("Pesan diterima:", content);
-  
-    // Proses kirim ke webhook n8n
+
+    // Jangan balas jika pesan dari bot sendiri
+    if (msg.key.fromMe) return;
+
     try {
-      const res = await axios.post(process.env.N8N_WEBHOOK_URL, {
-        from: sender,
+      const response = await axios.post("https://n8n-liemena.onrender.com/webhook/whatsapp-in", {
+        from,
         message: content,
-        group: sender.includes("@g.us"),
-        group_id: sender.includes("@g.us") ? sender : null,
-        timestamp: new Date().toISOString(),
+        group: isGroup,
+        group_id: isGroup ? from : null,
+        timestamp: new Date().toISOString()
       });
-  
-      const balasan = res.data?.message || "Terima kasih!";
-      await sock.sendMessage(sender, { text: balasan });
-    } catch (error) {
-      console.error("Gagal kirim ke webhook:", error.message);
+
+      const { message: reply } = response.data;
+      if (reply) {
+        await sock.sendMessage(from, { text: reply });
+      }
+    } catch (err) {
+      console.error("Gagal memproses pesan:", err.message);
     }
   });
 
-app.post('/send', async (req, res) => {
+  sock.ev.on("creds.update", saveState);
+}
+
+// Jalankan bot
+startSock();
+
+// Endpoint untuk menerima balasan dari n8n
+app.post("/send", async (req, res) => {
   const { to, message } = req.body;
   if (!to || !message) {
-    return res.status(400).json({ error: 'Field `to` dan `message` wajib diisi' });
+    return res.status(400).json({ error: "Field `to` dan `message` wajib diisi" });
   }
 
   try {
-    await sock.sendMessage(to, { text: message });
-    res.status(200).json({ status: 'sent', to, message });
+    const result = await sendMessageToWhatsApp(to, message);
+    res.json({ status: "sent", result });
   } catch (err) {
-    console.error(" Gagal kirim pesan:", err.message);
-    res.status(500).json({ error: err.message });
+    console.error("Gagal kirim pesan:", err.message);
+    res.status(500).json({ error: "Gagal kirim pesan" });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(` Server aktif di port ${PORT}`);
-  startSock();
+async function sendMessageToWhatsApp(to, message) {
+  const sock = makeWASocket({
+    auth: state,
+    printQRInTerminal: false,
+    logger: P({ level: "silent" })
+  });
+  return await sock.sendMessage(to, { text: message });
+}
+
+// Jalankan server
+app.listen(port, () => {
+  console.log(`Server aktif di port ${port}`);
 });
