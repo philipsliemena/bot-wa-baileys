@@ -58,33 +58,31 @@ const startSock = async () => {
 
   sock.ev.on('creds.update', saveCreds);
 
-  sock.ev.on('messages.upsert', async ({ messages }) => {
+  sock.ev.on("messages.upsert", async ({ messages, type }) => {
     const msg = messages[0];
-    if (!msg.message) return;
-    if (msg.key.fromMe) return; // Mencegah loop balasan dari bot sendiri
-
-    const pengirim = msg.key.participant || msg.key.remoteJid;
-    const isGroup = msg.key.remoteJid.endsWith('@g.us');
-    const isiPesan = msg.message?.conversation ||
-                     msg.message?.extendedTextMessage?.text ||
-                     'Pesan tidak dikenali';
-
+    if (!msg.message || msg.key.fromMe) return; // <- INI WAJIB: cegah balas pesan sendiri
+  
+    const sender = msg.key.remoteJid;
+    const content = msg.message?.conversation || msg.message?.extendedTextMessage?.text || "";
+  
+    console.log("Pesan diterima:", content);
+  
+    // Proses kirim ke webhook n8n
     try {
-      await axios.post(N8N_WEBHOOK_URL, {
-        from: pengirim,
-        message: isiPesan,
-        group: isGroup,
-        group_id: isGroup ? msg.key.remoteJid : null,
-        timestamp: new Date().toISOString()
+      const res = await axios.post(process.env.N8N_WEBHOOK_URL, {
+        from: sender,
+        message: content,
+        group: sender.includes("@g.us"),
+        group_id: sender.includes("@g.us") ? sender : null,
+        timestamp: new Date().toISOString(),
       });
-    } catch (err) {
-      console.error(" Gagal kirim ke webhook n8n:", err.message);
+  
+      const balasan = res.data?.message || "Terima kasih!";
+      await sock.sendMessage(sender, { text: balasan });
+    } catch (error) {
+      console.error("Gagal kirim ke webhook:", error.message);
     }
-
-    const balasan = `Pesan diterima: "${isiPesan}"`;
-    await sock.sendMessage(msg.key.remoteJid, { text: balasan });
   });
-};
 
 app.post('/send', async (req, res) => {
   const { to, message } = req.body;
