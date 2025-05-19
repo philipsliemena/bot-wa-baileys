@@ -34,6 +34,9 @@ const startSock = async () => {
       switch (reason) {
         case DisconnectReason.loggedOut:
           console.log(" Bot logout. Hapus sesi dan scan ulang QR.");
+          const fs = require('fs');
+          fs.rmSync('./session', { recursive: true, force: true });
+          startSock();
           break;
         case DisconnectReason.connectionReplaced:
           console.log(" Instansi lain login ke akun ini. Bot dihentikan.");
