@@ -23,8 +23,7 @@ const startSock = async () => {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      console.log("\n Scan QR ini untuk login:
-", qr);
+      console.log("\\n Scan QR ini untuk login:\\n", qr);
     }
 
     if (connection === 'close') {
