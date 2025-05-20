@@ -6,18 +6,16 @@ const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
 app.use(express.json());
 
 const N8N_WEBHOOK_URL = "https://n8n-liemena.onrender.com/webhook/whatsapp-in";
 let sock;
+const lastMessageIds = new Set(); // Untuk mencegah duplikasi
 
 const startSock = async () => {
   const { state, saveCreds } = await useMultiFileAuthState('session');
 
-  sock = makeWASocket({
-    auth: state
-  });
+  sock = makeWASocket({ auth: state });
 
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -60,7 +58,11 @@ const startSock = async () => {
 
   sock.ev.on('messages.upsert', async ({ messages }) => {
     const msg = messages[0];
-    if (!msg.message || msg.key.fromMe) return;
+    const msgId = msg.key?.id;
+
+    if (!msg.message || msg.key.fromMe || lastMessageIds.has(msgId)) return;
+
+    lastMessageIds.add(msgId); // tandai sudah diproses
 
     const pengirim = msg.key.participant || msg.key.remoteJid;
     const isGroup = msg.key.remoteJid.endsWith('@g.us');
@@ -81,6 +83,11 @@ const startSock = async () => {
       await sock.sendMessage(msg.key.remoteJid, { text: balasan });
     } catch (err) {
       console.error("Gagal kirim ke webhook n8n:", err.message);
+    }
+
+    // batasi ukuran memory
+    if (lastMessageIds.size > 100) {
+      lastMessageIds.clear();
     }
   });
 };
