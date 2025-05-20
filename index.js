@@ -2,28 +2,28 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = requi
 const express = require('express');
 const axios = require('axios');
 const { Boom } = require('@hapi/boom');
+const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-const N8N_WEBHOOK_URL = "https://n8n-liemena.onrender.com/webhook/whatsapp-in"; // Ganti dengan URL n8n kamu
+const N8N_WEBHOOK_URL = "https://n8n-liemena.onrender.com/webhook/whatsapp-in";
 let sock;
 
 const startSock = async () => {
   const { state, saveCreds } = await useMultiFileAuthState('session');
 
   sock = makeWASocket({
-    auth: state,
-    printQRInTerminal: true,
+    auth: state
   });
 
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      console.log("\n Scan QR ini untuk login:\n" + qr);
+      console.log("\nScan QR ini untuk login:\n" + qr);
     }
 
     if (connection === 'open') {
@@ -33,37 +33,26 @@ const startSock = async () => {
     if (connection === 'close') {
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
       switch (reason) {
-        case DisconnectReason.connectionClosed:
-          console.log("Koneksi ditutup, mencoba reconnect...");
-          startSock();
-          break;
-        case DisconnectReason.connectionLost:
-          console.log("Koneksi terputus, mencoba reconnect...");
-          startSock();
-          break;
         case DisconnectReason.loggedOut:
           console.log("Bot logout. Hapus sesi dan scan ulang QR.");
-          break;
-        case DisconnectReason.restartRequired:
-          console.log("Restart diperlukan. Restarting...");
-          startSock();
-          break;
-        case DisconnectReason.timedOut:
-          console.log("Koneksi timeout. Mencoba ulang...");
+          fs.rmSync('./session', { recursive: true, force: true });
           startSock();
           break;
         case DisconnectReason.connectionReplaced:
           console.log("Instansi lain login ke akun ini. Bot dihentikan.");
           break;
+        case DisconnectReason.connectionClosed:
+        case DisconnectReason.connectionLost:
+        case DisconnectReason.timedOut:
+        case DisconnectReason.restartRequired:
+          console.log("Koneksi terputus. Mencoba reconnect...");
+          startSock();
+          break;
         default:
-          console.log("Koneksi terputus, penyebab tidak diketahui:", lastDisconnect?.error);
+          console.log("Koneksi terputus: ", lastDisconnect?.error);
           startSock();
           break;
       }
-    }
-
-    if (connection === 'open') {
-      console.log("Bot terkoneksi ke WhatsApp!");
     }
   });
 
@@ -71,27 +60,28 @@ const startSock = async () => {
 
   sock.ev.on('messages.upsert', async ({ messages }) => {
     const msg = messages[0];
-    if (!msg.message) return;
+    if (!msg.message || msg.key.fromMe) return;
 
-    const sender = msg.key.participant || msg.key.remoteJid;
+    const pengirim = msg.key.participant || msg.key.remoteJid;
     const isGroup = msg.key.remoteJid.endsWith('@g.us');
-    const content = msg.message?.conversation ||
-      msg.message?.extendedTextMessage?.text || 'Pesan tidak dikenali';
+    const isiPesan = msg.message?.conversation ||
+                     msg.message?.extendedTextMessage?.text ||
+                     'Pesan tidak dikenali';
 
     try {
-      await axios.post(N8N_WEBHOOK_URL, {
-        from: sender,
-        message: content,
+      const res = await axios.post(N8N_WEBHOOK_URL, {
+        from: pengirim,
+        message: isiPesan,
         group: isGroup,
         group_id: isGroup ? msg.key.remoteJid : null,
         timestamp: new Date().toISOString()
       });
+
+      const balasan = res.data?.message || "Terima kasih!";
+      await sock.sendMessage(msg.key.remoteJid, { text: balasan });
     } catch (err) {
       console.error("Gagal kirim ke webhook n8n:", err.message);
     }
-
-  //  const balasan = `Pesan diterima: "${content}"`;
-    await sock.sendMessage(msg.key.remoteJid, { text: balasan });
   });
 };
 
