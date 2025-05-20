@@ -13,10 +13,20 @@ const SESSION_FOLDER = 'session';
 let sock;
 const lastMessageIds = new Set();
 
+// Endpoint tambahan untuk UptimeRobot
+app.get("/", (req, res) => {
+  res.status(200).send("Bot WhatsApp aktif");
+});
+
 const startSock = async () => {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_FOLDER);
 
-  sock = makeWASocket({ auth: state });
+  sock = makeWASocket({
+    auth: state,
+    browser: ['Ubuntu', 'Chrome', '22.04'],
+    connectTimeoutMs: 60_000,
+    markOnlineOnConnect: true,
+  });
 
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
