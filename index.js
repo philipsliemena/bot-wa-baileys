@@ -1,113 +1,98 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
-const express = require('express');
-const axios = require('axios');
-const { Boom } = require('@hapi/boom');
-const fs = require('fs');
-
+const { default: makeWASocket, useSingleFileAuthState, DisconnectReason } = require("@whiskeysockets/baileys");
+const pino = require("pino");
+const axios = require("axios");
+const express = require("express");
 const app = express();
-const PORT = process.env.PORT || 3000;
+const port = process.env.PORT || 10000;
+
 app.use(express.json());
 
-const N8N_WEBHOOK_URL = "https://n8n-liemena.onrender.com/webhook/whatsapp-in";
-let sock;
-const lastMessageIds = new Set(); // Untuk mencegah duplikasi
+const webhookUrl = "https://n8n-liemena.onrender.com/webhook/whatsapp-in";
 
-const startSock = async () => {
-  const { state, saveCreds } = await useMultiFileAuthState('session');
+const { state, saveState } = useSingleFileAuthState("./auth_info.json");
+let lastMessageIds = new Set();
 
-  sock = makeWASocket({ auth: state });
+async function startSock() {
+  const sock = makeWASocket({
+    printQRInTerminal: false,
+    auth: state,
+    logger: pino({ level: "silent" }),
+  });
 
-  sock.ev.on('connection.update', async (update) => {
+  sock.ev.on("connection.update", (update) => {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      console.log("\nScan QR ini untuk login:\n" + qr);
+      console.log("Scan QR ini untuk login:\n" + qr);
     }
 
-    if (connection === 'open') {
+    if (connection === "close") {
+      const code = lastDisconnect?.error?.output?.statusCode;
+
+      if (code === DisconnectReason.loggedOut) {
+        console.log("Bot logout. Hapus sesi dan scan ulang QR.");
+        const fs = require("fs");
+        if (fs.existsSync("./auth_info.json")) fs.unlinkSync("./auth_info.json");
+      }
+
+      console.log("Koneksi terputus. Mencoba reconnect...");
+      startSock();
+    } else if (connection === "open") {
       console.log("Bot terkoneksi ke WhatsApp!");
     }
-
-    if (connection === 'close') {
-      const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-      switch (reason) {
-        case DisconnectReason.loggedOut:
-          console.log("Bot logout. Hapus sesi dan scan ulang QR.");
-          fs.rmSync('./session', { recursive: true, force: true });
-          startSock();
-          break;
-        case DisconnectReason.connectionReplaced:
-          console.log("Instansi lain login ke akun ini. Bot dihentikan.");
-          break;
-        case DisconnectReason.connectionClosed:
-        case DisconnectReason.connectionLost:
-        case DisconnectReason.timedOut:
-        case DisconnectReason.restartRequired:
-          console.log("Koneksi terputus. Mencoba reconnect...");
-          startSock();
-          break;
-        default:
-          console.log("Koneksi terputus: ", lastDisconnect?.error);
-          startSock();
-          break;
-      }
-    }
   });
 
-  sock.ev.on('creds.update', saveCreds);
-
-  sock.ev.on('messages.upsert', async ({ messages }) => {
+  sock.ev.on("messages.upsert", async ({ messages, type }) => {
     const msg = messages[0];
-    const msgId = msg.key?.id;
+    if (!msg.message || msg.key.fromMe) return;
 
-    if (!msg.message || msg.key.fromMe || lastMessageIds.has(msgId)) return;
+    const messageId = msg.key.id;
+    if (lastMessageIds.has(messageId)) return;
+    lastMessageIds.add(messageId);
+    if (lastMessageIds.size > 100) {
+      const oldest = Array.from(lastMessageIds).slice(0, 50);
+      oldest.forEach((id) => lastMessageIds.delete(id));
+    }
 
-    lastMessageIds.add(msgId); // tandai sudah diproses
-
-    const pengirim = msg.key.participant || msg.key.remoteJid;
-    const isGroup = msg.key.remoteJid.endsWith('@g.us');
-    const isiPesan = msg.message?.conversation ||
-                     msg.message?.extendedTextMessage?.text ||
-                     'Pesan tidak dikenali';
+    const from = msg.key.remoteJid;
+    const isGroup = from.endsWith("@g.us");
+    const sender = isGroup ? msg.key.participant : from;
+    const pesan = msg.message?.conversation || msg.message?.extendedTextMessage?.text || "Pesan tidak dikenali";
 
     try {
-      const res = await axios.post(N8N_WEBHOOK_URL, {
-        from: pengirim,
-        message: isiPesan,
+      await axios.post(webhookUrl, {
+        from: sender,
+        message: pesan,
         group: isGroup,
-        group_id: isGroup ? msg.key.remoteJid : null,
-        timestamp: new Date().toISOString()
+        group_id: isGroup ? from : null,
+        timestamp: new Date().toISOString(),
       });
-
-      const balasan = res.data?.message || "Terima kasih!";
-      await sock.sendMessage(msg.key.remoteJid, { text: balasan });
     } catch (err) {
-      console.error("Gagal kirim ke webhook n8n:", err.message);
-    }
-
-    // batasi ukuran memory
-    if (lastMessageIds.size > 100) {
-      lastMessageIds.clear();
+      console.error("Gagal kirim ke webhook:", err.message);
     }
   });
-};
 
-app.post('/send', async (req, res) => {
+  sock.ev.on("creds.update", saveState);
+}
+
+startSock();
+
+app.post("/send", async (req, res) => {
   const { to, message } = req.body;
   if (!to || !message) {
-    return res.status(400).json({ error: 'Field `to` dan `message` wajib diisi' });
+    return res.status(400).json({ error: "Field `to` dan `message` wajib diisi" });
   }
 
   try {
+    const sock = makeWASocket({ auth: state, logger: pino({ level: "silent" }) });
     await sock.sendMessage(to, { text: message });
-    res.status(200).json({ status: 'sent', to, message });
+    res.json({ success: true });
   } catch (err) {
-    console.error("Gagal kirim pesan:", err.message);
-    res.status(500).json({ error: err.message });
+    console.error("Gagal mengirim:", err.message);
+    res.status(500).json({ error: "Gagal mengirim pesan" });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server aktif di port ${PORT}`);
-  startSock();
+app.listen(port, () => {
+  console.log("Server aktif di port", port);
 });
