@@ -27,8 +27,8 @@ const lastMessageIds = new Set(); // Untuk mencegah balasan ganda
 
 // Alias Map - untuk menghubungkan nomor WA dengan nama alias
 const aliasMap = {
-  '628164851879@s.whatsapp.net': 'OWNER ERA',
-  '6285678901234@s.whatsapp.net': 'ADMIN BACKUP'
+  '628164851879@s.whatsapp.net': 'ICONNESIA 1',
+  '6287833574761@s.whatsapp.net': 'ADMIN ICONNESIA'
 };
 
 // Endpoint untuk UptimeRobot atau cek status bot
