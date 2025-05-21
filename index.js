@@ -25,6 +25,12 @@ const WEBHOOK_URL = "https://n8n-liemena.onrender.com/webhook/whatsapp-in";
 let sock;
 const lastMessageIds = new Set(); // Untuk mencegah balasan ganda
 
+// Alias Map - untuk menghubungkan nomor WA dengan nama alias
+const aliasMap = {
+  '628164851879@s.whatsapp.net': 'OWNER ERA',
+  '6285678901234@s.whatsapp.net': 'ADMIN BACKUP'
+};
+
 // Endpoint untuk UptimeRobot atau cek status bot
 app.get("/", (req, res) => {
   res.status(200).send("Bot WhatsApp aktif");
@@ -102,10 +108,15 @@ const startSock = async () => {
                      msg.message?.extendedTextMessage?.text ||
                      'Pesan tidak dikenali';
 
+    // Cari alias dari nomor pengirim
+    const alias = aliasMap[pengirim] || pengirim;
+    console.log(`Pesan dari: ${alias} | Isi: ${isiPesan}`);
+
     // Kirim data pesan ke webhook n8n
     try {
       await axios.post(WEBHOOK_URL, {
         from: pengirim,
+        alias: alias,
         message: isiPesan,
         group: isGroup,
         group_id: isGroup ? msg.key.remoteJid : null,
