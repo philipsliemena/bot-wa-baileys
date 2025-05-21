@@ -1,61 +1,48 @@
 // Load environment variables from .env file
 require('dotenv').config();
-
-// Import required modules from Baileys and supporting packages
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const express = require('express');
 const axios = require('axios');
 const { Boom } = require('@hapi/boom');
 const fs = require('fs');
+const qrcode = require('qrcode-terminal');
 
-// Inisialisasi express app
 const app = express();
 const PORT = process.env.PORT || 3000;
 app.use(express.json());
 
-// Ambil nomor dari environment variable PHONE, default fallback jika tidak ada
 const nomor = process.env.PHONE || '6281234567890';
-
-// Tentukan folder penyimpanan sesi berdasarkan nomor
 const SESSION_FOLDER = `auth_${nomor}`;
-
-// URL webhook tujuan (n8n listener)
 const WEBHOOK_URL = "https://n8n-liemena.onrender.com/webhook/whatsapp-in";
 
 let sock;
-const lastMessageIds = new Set(); // Untuk mencegah balasan ganda
+const lastMessageIds = new Set();
 
-// Alias Map - untuk menghubungkan nomor WA dengan nama alias
 const aliasMap = {
   '628164851879@s.whatsapp.net': 'ICONNESIA 1',
   '6287833574761@s.whatsapp.net': 'ADMIN ICONNESIA'
 };
 
-// Endpoint untuk UptimeRobot atau cek status bot
 app.get("/", (req, res) => {
   res.status(200).send("Bot WhatsApp aktif");
 });
 
-// Fungsi utama untuk memulai koneksi WhatsApp
 const startSock = async () => {
-  // Load sesi autentikasi
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_FOLDER);
 
-  // Buat koneksi WhatsApp dengan konfigurasi
   sock = makeWASocket({
     auth: state,
-    browser: ['Ubuntu', 'Chrome', '22.04'], // Info user-agent yang digunakan
+    browser: ['Ubuntu', 'Chrome', '22.04'],
     connectTimeoutMs: 60_000,
-    markOnlineOnConnect: true,
-    printQRInTerminal: true // Cetak QR ke terminal saat belum login
+    markOnlineOnConnect: true
   });
 
-  // Event handler koneksi
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      console.log("\nScan QR ini untuk login:\n" + qr);
+      qrcode.generate(qr, { small: true });
+      console.log("Silakan scan QR di atas untuk login.");
     }
 
     if (connection === 'open') {
@@ -63,7 +50,6 @@ const startSock = async () => {
     }
 
     if (connection === 'close') {
-      // Tangani penyebab koneksi tertutup
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
       switch (reason) {
         case DisconnectReason.loggedOut:
@@ -81,20 +67,16 @@ const startSock = async () => {
     }
   });
 
-  // Simpan sesi ke folder saat diperbarui
   sock.ev.on('creds.update', saveCreds);
 
-  // Kirim presence update tiap 5 menit agar sesi tidak dianggap idle
   setInterval(() => {
     sock.sendPresenceUpdate('available');
   }, 1000 * 60 * 5);
 
-  // Tangani pesan masuk
   sock.ev.on('messages.upsert', async ({ messages }) => {
     const msg = messages[0];
     const msgId = msg.key?.id;
 
-    // Skip pesan dari bot sendiri atau duplikat
     if (!msg.message || msg.key.fromMe || lastMessageIds.has(msgId)) return;
     lastMessageIds.add(msgId);
     if (lastMessageIds.size > 100) {
@@ -108,11 +90,9 @@ const startSock = async () => {
                      msg.message?.extendedTextMessage?.text ||
                      'Pesan tidak dikenali';
 
-    // Cari alias dari nomor pengirim
     const alias = aliasMap[pengirim] || pengirim;
     console.log(`Pesan dari: ${alias} | Isi: ${isiPesan}`);
 
-    // Kirim data pesan ke webhook n8n
     try {
       await axios.post(WEBHOOK_URL, {
         from: pengirim,
@@ -128,7 +108,6 @@ const startSock = async () => {
   });
 };
 
-// Endpoint manual untuk mengirim pesan ke nomor WA dari API eksternal
 app.post('/send', async (req, res) => {
   const { to, message } = req.body;
   if (!to || !message) {
@@ -144,7 +123,6 @@ app.post('/send', async (req, res) => {
   }
 });
 
-// Mulai server dan koneksi WhatsApp
 app.listen(PORT, () => {
   console.log(`Server aktif di port ${PORT}`);
   startSock();
