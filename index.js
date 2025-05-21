@@ -41,6 +41,8 @@ const startSock = async () => {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
+      console.log("QR Code String (copy-paste untuk convert):", qr);
+      const qrcode = require('qrcode-terminal');
       qrcode.generate(qr, { small: true });
       console.log("Silakan scan QR di atas untuk login.");
     }
